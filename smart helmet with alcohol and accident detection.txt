@@ -1,0 +1,130 @@
+#include <SoftwareSerial.h>
+#include <TinyGPS++.h>
+
+SoftwareSerial gsmSerial(8, 7);  // GSM TX, RX
+SoftwareSerial gpsSerial(4, 3);  // GPS TX, RX
+
+TinyGPSPlus gps;
+
+const int alcoholPin = A0;
+const int vibrationPin = 2;
+const int helmetPin = 5;
+const int buzzerPin = 6;
+
+String emergencyNumber = "+919876543210";  // Default, can be changed via SMS
+
+bool alertSent = false;
+
+void setup() {
+  Serial.begin(9600);
+  gpsSerial.begin(9600);
+  gsmSerial.begin(9600);
+
+  pinMode(alcoholPin, INPUT);
+  pinMode(vibrationPin, INPUT);
+  pinMode(helmetPin, INPUT_PULLUP); // Active LOW
+  pinMode(buzzerPin, OUTPUT);
+
+  gsmInit();
+}
+
+void loop() {
+  readGPS();
+  checkSMS();
+
+  int alcoholValue = analogRead(alcoholPin);
+  bool helmetWorn = digitalRead(helmetPin) == LOW;
+  bool vibrationDetected = digitalRead(vibrationPin) == HIGH;
+
+  if (!helmetWorn) {
+    alertSent = false;
+    return;
+  }
+
+  if (alcoholValue > 400 && helmetWorn) {
+    sendSMS("Alcohol detected! Please don't ride.");
+    buzz();
+    delay(5000);
+  }
+
+  if (vibrationDetected && !alertSent) {
+    sendLocation("Accident detected! Location:");
+    buzz();
+    alertSent = true;
+    delay(10000);
+  }
+
+  delay(500);
+}
+
+void gsmInit() {
+  gsmSerial.println("AT");
+  delay(1000);
+  gsmSerial.println("AT+CMGF=1");  // Text mode
+  delay(1000);
+  gsmSerial.println("AT+CNMI=1,2,0,0,0"); // Show SMS
+  delay(1000);
+}
+
+void buzz() {
+  digitalWrite(buzzerPin, HIGH);
+  delay(1000);
+  digitalWrite(buzzerPin, LOW);
+}
+
+void readGPS() {
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
+  }
+}
+
+void checkSMS() {
+  if (gsmSerial.available()) {
+    String sms = gsmSerial.readString();
+    sms.trim();
+
+    if (sms.indexOf("SETNUM:") >= 0) {
+      int index = sms.indexOf("SETNUM:") + 7;
+      String newNum = sms.substring(index);
+      newNum.trim();
+
+      if (newNum.startsWith("+91") && newNum.length() >= 10) {
+        emergencyNumber = newNum;
+        sendSMS("Emergency number updated to " + emergencyNumber);
+      } else {
+        sendSMS("Invalid number format. Use SETNUM:+91XXXXXXXXXX");
+      }
+    }
+
+    if (sms.indexOf("GPS") >= 0) {
+      sendLocation("Live Helmet Location:");
+    }
+  }
+}
+
+void sendSMS(String message) {
+  gsmSerial.println("AT+CMGF=1");
+  delay(500);
+  gsmSerial.println("AT+CMGS=\"" + emergencyNumber + "\"");
+  delay(500);
+  gsmSerial.print(message);
+  delay(500);
+  gsmSerial.write(26); // Ctrl+Z
+  delay(3000);
+}
+
+void sendLocation(String prefix) {
+  unsigned long start = millis();
+  while (!gps.location.isValid()) {
+    readGPS();
+    if (millis() - start > 15000) {
+      sendSMS("Unable to get GPS signal.");
+      return;
+    }
+  }
+
+  float lat = gps.location.lat();
+  float lng = gps.location.lng();
+  String link = "http://maps.google.com/?q=" + String(lat, 6) + "," + String(lng, 6);
+  sendSMS(prefix + "\n" + link);
+}
